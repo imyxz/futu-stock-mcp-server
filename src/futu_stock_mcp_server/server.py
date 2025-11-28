@@ -1069,7 +1069,7 @@ async def get_ticker(symbol: str) -> Dict[str, Any]:
         - Update frequency varies by market and stock
         - Consider using callbacks for real-time processing
     """
-    ret, data = quote_ctx.get_ticker(symbol)
+    ret, data = quote_ctx.get_rt_ticker(symbol)
     return handle_return_data(ret, data)
 
 @mcp.tool()
@@ -1195,11 +1195,9 @@ async def subscribe(symbols: List[str], sub_types: List[str]) -> Dict[str, Any]:
         - INVALID_SUBTYPE: Invalid subscription type
         - SUBSCRIBE_FAILED: Failed to subscribe
     """
-    for symbol in symbols:
-        for sub_type in sub_types:
-            ret, data = quote_ctx.subscribe(symbol, sub_type)
-            if ret != RET_OK:
-                return {'error': data}
+    ret, data = quote_ctx.subscribe(symbols, sub_types)
+    if ret != RET_OK:
+        return {'error': data}
     return {"status": "success"}
 
 @mcp.tool()
@@ -1238,11 +1236,9 @@ async def unsubscribe(symbols: List[str], sub_types: List[str]) -> Dict[str, Any
         - INVALID_SUBTYPE: Invalid subscription type
         - UNSUBSCRIBE_FAILED: Failed to unsubscribe
     """
-    for symbol in symbols:
-        for sub_type in sub_types:
-            ret, data = quote_ctx.unsubscribe(symbol, sub_type)
-            if ret != RET_OK:
-                return {'error': data}
+    ret, data = quote_ctx.unsubscribe(symbols, sub_types)
+    if ret != RET_OK:
+        return {'error': data}
     return {"status": "success"}
 
 # Derivatives Tools
@@ -1292,7 +1288,7 @@ async def get_option_chain(symbol: str, start: str, end: str) -> Dict[str, Any]:
         - Data is updated during trading hours
         - Consider using with option expiration dates API
     """
-    ret, data = quote_ctx.get_option_chain(symbol, start, end)
+    ret, data = quote_ctx.get_option_chain(code=symbol, start=start, end=end)
     return data.to_dict() if ret == RET_OK else {'error': data}
 
 @mcp.tool()
@@ -1852,4 +1848,3 @@ Environment Variables:
 
 if __name__ == "__main__":
     main()
-
