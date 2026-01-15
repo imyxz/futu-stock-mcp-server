@@ -496,10 +496,8 @@ def init_trade_connection():
         
         # 创建交易上下文
         trade_ctx = OpenSecTradeContext(
-            filter_trdmarket=trd_market,
             host=_futu_host,
             port=_futu_port,
-            security_firm=security_firm
         )
             
         # 等待连接就绪
