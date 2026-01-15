@@ -487,17 +487,14 @@ def init_trade_connection():
         trade_env = os.getenv('FUTU_TRADE_ENV', 'SIMULATE')
         security_firm = getattr(SecurityFirm, os.getenv('FUTU_SECURITY_FIRM', 'FUTUSECURITIES'))
         
-        # 只支持港股和美股
-        market_map = {
-            'HK': 1,  # TrdMarket.HK
-            'US': 2   # TrdMarket.US
-        }
-        trd_market = market_map.get(os.getenv('FUTU_TRD_MARKET', 'HK'), 1)
+        trd_market = os.getenv('FUTU_TRD_MARKET', 'HK')
         
         # 创建交易上下文
         trade_ctx = OpenSecTradeContext(
+            filter_trdmarket=trd_market,
             host=_futu_host,
             port=_futu_port,
+            security_firm=security_firm
         )
             
         # 等待连接就绪
