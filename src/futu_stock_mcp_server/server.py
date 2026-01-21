@@ -487,12 +487,7 @@ def init_trade_connection():
         trade_env = os.getenv('FUTU_TRADE_ENV', 'SIMULATE')
         security_firm = getattr(SecurityFirm, os.getenv('FUTU_SECURITY_FIRM', 'FUTUSECURITIES'))
         
-        # 只支持港股和美股
-        market_map = {
-            'HK': 1,  # TrdMarket.HK
-            'US': 2   # TrdMarket.US
-        }
-        trd_market = market_map.get(os.getenv('FUTU_TRD_MARKET', 'HK'), 1)
+        trd_market = os.getenv('FUTU_TRD_MARKET', 'HK')
         
         # 创建交易上下文
         trade_ctx = OpenSecTradeContext(
@@ -1325,6 +1320,9 @@ async def get_option_expiration_date(symbol: str) -> Dict[str, Any]:
 async def get_option_condor(symbol: str, expiry: str, strike_price: float) -> Dict[str, Any]:
     """Get option condor strategy data
     
+    WARNING: This interface may be deprecated in the latest API documentation (v9.6).
+    Please use get_option_chain for option data instead.
+    
     Args:
         symbol: Stock code, e.g. "HK.00700", "US.AAPL"
             Format: {market}.{code}
@@ -1353,6 +1351,7 @@ async def get_option_condor(symbol: str, expiry: str, strike_price: float) -> Di
         - Involves four different strike prices
         - Limited risk and limited profit potential
         - Best used in low volatility environments
+        - This interface may not be available in the latest API version
     """
     ret, data = quote_ctx.get_option_condor(symbol, expiry, strike_price)
     return data.to_dict() if ret == RET_OK else {'error': data}
@@ -1360,6 +1359,9 @@ async def get_option_condor(symbol: str, expiry: str, strike_price: float) -> Di
 @mcp.tool()
 async def get_option_butterfly(symbol: str, expiry: str, strike_price: float) -> Dict[str, Any]:
     """Get option butterfly strategy data
+    
+    WARNING: This interface may be deprecated in the latest API documentation (v9.6).
+    Please use get_option_chain for option data instead.
     
     Args:
         symbol: Stock code, e.g. "HK.00700", "US.AAPL"
@@ -1390,6 +1392,7 @@ async def get_option_butterfly(symbol: str, expiry: str, strike_price: float) ->
         - Limited risk and limited profit potential
         - Maximum profit at middle strike price
         - Best used when expecting low volatility
+        - This interface may not be available in the latest API version
     """
     ret, data = quote_ctx.get_option_butterfly(symbol, expiry, strike_price)
     return data.to_dict() if ret == RET_OK else {'error': data}
@@ -1397,7 +1400,30 @@ async def get_option_butterfly(symbol: str, expiry: str, strike_price: float) ->
 # Account Query Tools
 @mcp.tool()
 async def get_account_list(ctx: Context[ServerSession, None] = None) -> Dict[str, Any]:
-    """Get account list"""
+    """Get trading account list
+    
+    Returns:
+        Dict containing account list information including:
+        - acc_list: List of accounts, each containing:
+            - acc_id: Account ID
+            - trd_env: Trading environment (SIMULATE/REAL)
+            - acc_type: Account type
+            - card_num: Card number
+            - security_firm: Security firm
+            - trd_market: Trading market (HK/US/CN)
+            - acc_state: Account state
+            - acc_name: Account name
+            
+    Raises:
+        - Failed to initialize trade connection
+        - Failed to get account list
+        
+    Note:
+        - Requires trade connection to be initialized
+        - Returns all trading accounts available for the user
+        - Different accounts may have different trading permissions
+        - Account list includes both simulated and real trading accounts
+    """
     safe_log("info", "Attempting to get account list", ctx)
 
     if not init_trade_connection():
@@ -1422,7 +1448,30 @@ async def get_account_list(ctx: Context[ServerSession, None] = None) -> Dict[str
 
 @mcp.tool()
 async def get_funds() -> Dict[str, Any]:
-    """Get account funds information"""
+    """Get account funds information
+    
+    Returns:
+        Dict containing account funds information including:
+        - total_assets: Total assets
+        - cash: Available cash
+        - market_val: Market value of positions
+        - power: Trading power
+        - max_power_short: Maximum short trading power
+        - net_cash_power: Net cash power
+        - long_mv: Long position market value
+        - short_mv: Short position market value
+        - pending_asset: Pending assets
+        - currency: Currency code
+        
+    Raises:
+        - Failed to initialize trade connection
+        - Failed to get account funds
+        
+    Note:
+        - Requires trade connection to be initialized
+        - Returns real-time account information
+        - Data format may vary by market and account type
+    """
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
     try:
@@ -1439,7 +1488,36 @@ async def get_funds() -> Dict[str, Any]:
 
 @mcp.tool()
 async def get_positions() -> Dict[str, Any]:
-    """Get account positions"""
+    """Get account positions list
+    
+    Returns:
+        Dict containing position list information including:
+        - code: Stock code
+        - stock_name: Stock name
+        - qty: Position quantity
+        - can_sell_qty: Sellable quantity
+        - cost_price: Average cost price
+        - cost_price_valid: Whether cost price is valid
+        - market_val: Market value
+        - nominal_price: Nominal price
+        - pl_ratio: Profit/loss ratio
+        - pl_ratio_valid: Whether P/L ratio is valid
+        - pl_val: Profit/loss value
+        - pl_val_valid: Whether P/L value is valid
+        - today_buy_val: Today's buy value
+        - today_buy_qty: Today's buy quantity
+        - today_sell_val: Today's sell value
+        - today_sell_qty: Today's sell quantity
+        
+    Raises:
+        - Failed to initialize trade connection
+        - Failed to get positions
+        
+    Note:
+        - Requires trade connection to be initialized
+        - Returns all positions in the account
+        - Includes both long and short positions
+    """
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
     ret, data = trade_ctx.position_list_query()
@@ -1447,7 +1525,33 @@ async def get_positions() -> Dict[str, Any]:
 
 @mcp.tool()
 async def get_max_power() -> Dict[str, Any]:
-    """Get maximum trading power for the account"""
+    """Get maximum tradable quantity for the account
+    
+    Args:
+        symbol: Optional stock code. If provided, returns max tradable quantity for that stock.
+            If not provided, returns general trading power information.
+            Format: "market.code", e.g. "HK.00700", "US.AAPL"
+    
+    Returns:
+        Dict containing maximum trading power information including:
+        - max_cash_buy: Maximum cash buy quantity
+        - max_cash_and_margin_buy: Maximum cash + margin buy quantity
+        - max_position_sell: Maximum position sell quantity
+        - max_sell_short: Maximum short sell quantity
+        - max_buy_back: Maximum buy back quantity
+        - net_cash_power: Net cash power
+        - long_mv: Long position market value
+        - short_mv: Short position market value
+        
+    Raises:
+        - Failed to initialize trade connection
+        - Failed to get maximum trading power
+        
+    Note:
+        - Requires trade connection to be initialized
+        - If symbol is provided, calculates max tradable quantity for that specific stock
+        - Takes into account margin requirements, available cash, and position limits
+    """
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
     ret, data = trade_ctx.get_max_power()
@@ -1455,11 +1559,132 @@ async def get_max_power() -> Dict[str, Any]:
 
 @mcp.tool()
 async def get_margin_ratio(symbol: str) -> Dict[str, Any]:
-    """Get margin ratio for a security"""
+    """Get margin trading data for a security
+    
+    Args:
+        symbol: Stock code in format "market.code", e.g. "HK.00700", "US.AAPL"
+            Format: {market}.{code}
+            - HK: Hong Kong stocks
+            - US: US stocks
+            - SH: Shanghai stocks
+            - SZ: Shenzhen stocks
+    
+    Returns:
+        Dict containing margin trading data including:
+        - financing_ratio: Financing ratio
+        - margin_ratio: Margin ratio
+        - financing_cash: Available financing cash
+        - collateral_ratio: Collateral ratio
+        - available_margin: Available margin
+        - margin_call_price: Margin call price
+        - forced_liquidation_price: Forced liquidation price
+        
+    Raises:
+        - Failed to initialize trade connection
+        - INVALID_PARAM: Invalid parameter
+        - INVALID_CODE: Invalid stock code format
+        - GET_MARGIN_RATIO_FAILED: Failed to get margin ratio
+        
+    Note:
+        - Requires trade connection to be initialized
+        - Only available for margin trading enabled accounts
+        - Data may vary by market and security type
+    """
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
     ret, data = trade_ctx.get_margin_ratio(symbol)
     return handle_return_data(ret, data)
+
+@mcp.tool()
+async def unlock_trade(password: str, is_unlock: bool = True) -> Dict[str, Any]:
+    """Unlock or lock trading
+    
+    Args:
+        password: Trading password for unlocking
+        is_unlock: True to unlock trading, False to lock trading (default: True)
+    
+    Returns:
+        Dict containing unlock result:
+        - status: "success" or error message
+        
+    Raises:
+        - Failed to initialize trade connection
+        - INVALID_PASSWORD: Invalid password
+        - UNLOCK_TRADE_FAILED: Failed to unlock/lock trading
+        
+    Note:
+        - Requires trade connection to be initialized
+        - Real trading accounts require unlocking before placing orders
+        - Simulated accounts do not require unlocking
+        - Password is required for real trading accounts
+        - Locking trading prevents accidental order placement
+    """
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+    try:
+        ret, data = trade_ctx.unlock_trade(password, is_unlock)
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return {'status': 'success'}
+    except Exception as e:
+        return {'error': f'Failed to unlock/lock trading: {str(e)}'}
+
+@mcp.tool()
+async def get_acc_cash_flow(start: str, end: str, market: str = None) -> Dict[str, Any]:
+    """Get account cash flow summary
+    
+    Args:
+        start: Start date in format "YYYY-MM-DD"
+        end: End date in format "YYYY-MM-DD"
+        market: Optional market code. If not provided, returns cash flow for all markets.
+            Options:
+            - "HK": Hong Kong market
+            - "US": US market
+            - "SH": Shanghai market
+            - "SZ": Shenzhen market
+    
+    Returns:
+        Dict containing cash flow summary including:
+        - flow_list: List of cash flow entries, each containing:
+            - date: Transaction date
+            - time: Transaction time
+            - type: Transaction type
+            - amount: Transaction amount
+            - currency: Currency code
+            - balance: Account balance after transaction
+            - remark: Transaction remark
+            
+    Raises:
+        - Failed to initialize trade connection
+        - INVALID_PARAM: Invalid parameter
+        - INVALID_DATE: Invalid date format
+        - GET_ACC_CASH_FLOW_FAILED: Failed to get cash flow
+        
+    Note:
+        - Requires trade connection to be initialized
+        - Minimum API version required: 9.1.5108
+        - Returns cash flow transactions within the specified date range
+        - Includes deposits, withdrawals, dividends, fees, etc.
+        - Useful for account reconciliation and analysis
+    """
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+    try:
+        # Check if the method exists (for older API versions)
+        if not hasattr(trade_ctx, 'get_acc_cash_flow'):
+            return {'error': 'get_acc_cash_flow is not available. Minimum API version required: 9.1.5108'}
+        
+        if market:
+            ret, data = trade_ctx.get_acc_cash_flow(start=start, end=end, market=market)
+        else:
+            ret, data = trade_ctx.get_acc_cash_flow(start=start, end=end)
+        
+        if ret != RET_OK:
+            return {'error': str(data)}
+        
+        return handle_return_data(ret, data)
+    except Exception as e:
+        return {'error': f'Failed to get account cash flow: {str(e)}'}
 
 # Market Information Tools
 @mcp.tool()
@@ -1507,19 +1732,25 @@ async def get_market_state(market: str) -> Dict[str, Any]:
     return data.to_dict() if ret == RET_OK else {'error': data}
 
 @mcp.tool()
-async def get_security_info(market: str, code: str) -> Dict[str, Any]:
-    """Get security information
+async def get_stock_basicinfo(stock_code: str, market: str = None) -> Dict[str, Any]:
+    """Get stock basic information
     
     Args:
-        market: Market code, options:
+        stock_code: Stock code in format "market.code", e.g. "HK.00700", "US.AAPL", "SH.600519"
+            Format: {market}.{code}
+            - HK: Hong Kong stocks
+            - US: US stocks
+            - SH: Shanghai stocks
+            - SZ: Shenzhen stocks
+        market: Optional market code. If not provided, will be parsed from stock_code
+            Options:
             - "HK": Hong Kong market
             - "US": US market
             - "SH": Shanghai market
             - "SZ": Shenzhen market
-        code: Stock code without market prefix, e.g. "00700" for "HK.00700"
     
     Returns:
-        Dict containing security information including:
+        Dict containing stock basic information including:
         - stock_code: Stock code
         - stock_name: Stock name
         - market: Market code
@@ -1553,12 +1784,15 @@ async def get_security_info(market: str, code: str) -> Dict[str, Any]:
         - Some fields may be empty for certain security types
         - Important for fundamental analysis
     """
-    ret, data = quote_ctx.get_security_info(market, code)
+    if market:
+        ret, data = quote_ctx.get_stock_basicinfo(stock_code=stock_code, market=market)
+    else:
+        ret, data = quote_ctx.get_stock_basicinfo(stock_code=stock_code)
     return data.to_dict() if ret == RET_OK else {'error': data}
 
 @mcp.tool()
-async def get_security_list(market: str) -> Dict[str, Any]:
-    """Get security list
+async def get_stock_list(market: str) -> Dict[str, Any]:
+    """Get stock list
     
     Args:
         market: Market code, options:
@@ -1568,31 +1802,30 @@ async def get_security_list(market: str) -> Dict[str, Any]:
             - "SZ": Shenzhen market
             
     Returns:
-        Dict containing list of securities:
-        - security_list: List of securities, each containing:
-            - code: Security code
-            - name: Security name
+        Dict containing list of stocks:
+        - stock_list: List of stocks, each containing:
+            - code: Stock code
+            - name: Stock name
+            - market: Market code
             - lot_size: Lot size
-            - stock_type: Security type
+            - stock_type: Stock type
             - list_time: Listing date
-            - stock_id: Security ID
-            - delisting: Whether delisted
-            - main_contract: Whether it's the main contract (futures)
-            - last_trade_time: Last trade time (futures/options)
+            - delist_time: Delisting date (if applicable)
+            - status: Stock status (1: Listed, 0: Delisted)
             
     Raises:
         - INVALID_PARAM: Invalid parameter
         - INVALID_MARKET: Invalid market code
-        - GET_SECURITY_LIST_FAILED: Failed to get security list
+        - GET_STOCK_LIST_FAILED: Failed to get stock list
         
     Note:
-        - Returns all securities in the specified market
+        - Returns all stocks in the specified market
         - Includes stocks, ETFs, warrants, etc.
         - Updated daily
         - Useful for market analysis and monitoring
         - Consider caching results for better performance
     """
-    ret, data = quote_ctx.get_security_list(market)
+    ret, data = quote_ctx.get_stock_list(market)
     return data.to_dict() if ret == RET_OK else {'error': data}
 
 # Prompts
