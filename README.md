@@ -136,10 +136,13 @@ cp .env.example .env
 
 Edit the `.env` file with your server settings:
 ```
-HOST=0.0.0.0
-PORT=8000
 FUTU_HOST=127.0.0.1
 FUTU_PORT=11111
+FUTU_ENABLE_TRADING=0
+FUTU_ENABLE_POSITIONS=1
+FUTU_TRADE_ENV=SIMULATE
+FUTU_SECURITY_FIRM=FUTUSECURITIES
+FUTU_TRD_MARKET=HK
 ```
 
 ## Development
@@ -290,7 +293,12 @@ python -m futu_stock_mcp_server.server
 ```bash
 FUTU_HOST=127.0.0.1
 FUTU_PORT=11111
-LOG_LEVEL=INFO
+FUTU_ENABLE_TRADING=0
+FUTU_ENABLE_POSITIONS=1
+FUTU_TRADE_ENV=SIMULATE
+FUTU_SECURITY_FIRM=FUTUSECURITIES
+FUTU_TRD_MARKET=HK
+FUTU_DEBUG_MODE=0
 ```
 
 ### 3. 验证连接
@@ -403,7 +411,19 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## Changelog
+
+Latest updates (`2026-03-02`):
+- Added trading MCP tools: `unlock_trade`, `place_order`, `modify_order`, `cancel_order`, `cancel_all_orders`, order/deal query tools, fee/cashflow tools.
+- Added position and trade feature switches: `FUTU_ENABLE_POSITIONS`, `FUTU_ENABLE_TRADING`.
+- Added official Futu API to MCP mapping doc: [docs/FUTU_API_MCP_COVERAGE.md](docs/FUTU_API_MCP_COVERAGE.md).
+- Kept backward compatibility: existing MCP tool names and argument contracts were not changed.
+
+Full history: [CHANGELOG.md](CHANGELOG.md)
+
 ## Available API Methods
+
+Full mapping document (official Futu API -> MCP tools): [docs/FUTU_API_MCP_COVERAGE.md](docs/FUTU_API_MCP_COVERAGE.md)
 
 ### Market Data Tools
 - `get_stock_quote`: Get stock quote data
@@ -427,8 +447,25 @@ if __name__ == "__main__":
 
 ### Account Query Tools
 - `get_account_list`: Get account list
-- `get_asset_info`: Get asset information
-- `get_asset_allocation`: Get asset allocation information
+- `get_funds`: Get account funds information
+- `get_positions`: Get account positions
+- `get_position_list`: Get account positions with filters
+- `get_max_power`: Get account buying power
+- `get_margin_ratio`: Get margin ratio for a security
+
+### Trading Tools
+- `unlock_trade`: Unlock trade operations
+- `place_order`: Place order
+- `modify_order`: Modify order
+- `cancel_order`: Cancel one order
+- `cancel_all_orders`: Cancel all cancellable orders
+- `get_order_list`: Query current order list
+- `get_history_order_list`: Query historical orders
+- `get_deal_list`: Query current deals
+- `get_history_deal_list`: Query historical deals
+- `get_order_fee`: Query order fee details
+- `get_acc_cash_flow`: Query cash flow details
+- `get_acc_trading_info`: Query trade capability/pre-check
 
 ### Market Information Tools
 - `get_market_state`: Get market state

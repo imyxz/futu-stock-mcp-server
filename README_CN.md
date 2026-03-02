@@ -91,10 +91,13 @@ cp .env.example .env
 
 编辑 `.env` 文件，设置服务器配置：
 ```
-HOST=0.0.0.0
-PORT=8000
 FUTU_HOST=127.0.0.1
 FUTU_PORT=11111
+FUTU_ENABLE_TRADING=0
+FUTU_ENABLE_POSITIONS=1
+FUTU_TRADE_ENV=SIMULATE
+FUTU_SECURITY_FIRM=FUTUSECURITIES
+FUTU_TRD_MARKET=HK
 ```
 
 ## 开发指南
@@ -188,6 +191,8 @@ if __name__ == "__main__":
 ```
 
 ## 可用 MCP 功能
+
+完整映射文档（官方 Futu API -> MCP 工具）：[docs/FUTU_API_MCP_COVERAGE.md](docs/FUTU_API_MCP_COVERAGE.md)
 
 ### 市场数据功能
 
@@ -350,6 +355,26 @@ result = await session.call_tool("get_max_power", {"random_string": "dummy"})
 ```python
 result = await session.call_tool("get_margin_ratio", {"symbol": "HK.00700"})
 ```
+
+### 交易功能（可通过配置开关控制）
+
+- `FUTU_ENABLE_TRADING=0|1`：控制下单/改单/撤单及订单成交查询功能
+- `FUTU_ENABLE_POSITIONS=0|1`：控制持仓查询功能（`get_positions` / `get_position_list`）
+
+新增交易相关 MCP 工具：
+- `unlock_trade`
+- `place_order`
+- `modify_order`
+- `cancel_order`
+- `cancel_all_orders`
+- `get_order_list`
+- `get_history_order_list`
+- `get_deal_list`
+- `get_history_deal_list`
+- `get_order_fee`
+- `get_acc_cash_flow`
+- `get_acc_trading_info`
+- `get_position_list`
 
 ### 市场信息功能
 

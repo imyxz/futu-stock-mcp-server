@@ -80,7 +80,22 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from typing import Dict, Any, List, Optional
 try:
-    from futu import OpenQuoteContext, OpenSecTradeContext, TrdMarket, SecurityFirm, RET_OK
+    from futu import (
+        OpenQuoteContext,
+        OpenSecTradeContext,
+        TrdMarket,
+        SecurityFirm,
+        RET_OK,
+        TrdEnv,
+        TrdSide,
+        OrderType,
+        ModifyOrderOp,
+        Session,
+        TrailType,
+        TimeInForce,
+        OrderStatus,
+        CashFlowDirection,
+    )
 except ImportError as e:
     # In MCP mode, we should avoid printing to stdout/stderr
     # Log to file only
@@ -580,40 +595,12 @@ def init_futu_connection(host: str = '127.0.0.1', port: int = 11111) -> bool:
         # Initialize quote context
         quote_ctx = OpenQuoteContext(host=host, port=port)
 
-        # Initialize trade context if needed
-        if os.getenv('FUTU_ENABLE_TRADING', '0') == '1':
-            # Get trading parameters
-            trade_env = os.getenv('FUTU_TRADE_ENV', 'SIMULATE')
-            security_firm = os.getenv('FUTU_SECURITY_FIRM', 'FUTUSECURITIES')
-            trd_market = os.getenv('FUTU_TRD_MARKET', 'HK')
-
-            # Map environment strings to Futu enums
-            trade_env_enum = {
-                'REAL': TrdMarket.REAL,
-                'SIMULATE': TrdMarket.SIMULATE
-            }.get(trade_env, TrdMarket.SIMULATE)
-
-            security_firm_enum = {
-                'FUTUSECURITIES': SecurityFirm.FUTUSECURITIES,
-                'FUTUINC': SecurityFirm.FUTUINC
-            }.get(security_firm, SecurityFirm.FUTUSECURITIES)
-
-            trd_market_enum = {
-                'HK': TrdMarket.HK,
-                'US': TrdMarket.US,
-                'CN': TrdMarket.CN,
-                'HKCC': TrdMarket.HKCC,
-                'AU': TrdMarket.AU
-            }.get(trd_market, TrdMarket.HK)
-
-            # Initialize trade context
-            trade_ctx = OpenSecTradeContext(
-                host=host,
-                port=port,
-                security_firm=security_firm_enum
-            )
-            _is_trade_initialized = True
-            logger.info("Trade context initialized successfully")
+        # Trade context stays lazy-initialized by trading/position tools.
+        # This avoids startup failure when trade permissions are not available.
+        trade_ctx = None
+        _is_trade_initialized = False
+        if trading_feature_enabled() or position_feature_enabled():
+            logger.info("Trade-related features enabled; trade context will initialize lazily on first use")
 
         logger.info("Futu connection initialized successfully")
         return True
@@ -666,6 +653,62 @@ def handle_return_data(ret: int, data: Any) -> Dict[str, Any]:
         return dict(data)
     except (TypeError, ValueError):
         return {'data': data}
+
+
+def is_env_flag_enabled(env_key: str, default: str = "0") -> bool:
+    """Parse env feature flags in a tolerant way."""
+    value = os.getenv(env_key, default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def trading_feature_enabled() -> bool:
+    """Whether active trading tools are enabled."""
+    return is_env_flag_enabled("FUTU_ENABLE_TRADING", "0")
+
+
+def position_feature_enabled() -> bool:
+    """Whether position/holding tools are enabled."""
+    return is_env_flag_enabled("FUTU_ENABLE_POSITIONS", "1")
+
+
+def feature_disabled_error(feature: str, env_key: str) -> Dict[str, Any]:
+    """Standardized feature-disabled response."""
+    return {"error": f"{feature} is disabled. Set {env_key}=1 to enable."}
+
+
+def parse_enum_value(enum_cls: Any, raw_value: Any, field_name: str) -> Any:
+    """Convert user input into futu enum values, keeping protocol simple."""
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        return raw_value
+    enum_name = raw_value.strip().upper()
+    if hasattr(enum_cls, enum_name):
+        return getattr(enum_cls, enum_name)
+    raise ValueError(
+        f"Invalid {field_name}: {raw_value}. "
+        f"Expected one of {[k for k in dir(enum_cls) if k.isupper() and not k.startswith('_')]}"
+    )
+
+
+def parse_enum_list(enum_cls: Any, values: Optional[List[str]], field_name: str) -> List[Any]:
+    """Convert a list of enum names into futu enum values."""
+    if not values:
+        return []
+    return [parse_enum_value(enum_cls, item, field_name) for item in values]
+
+
+def get_trade_env_value(trd_env: Optional[str]) -> Any:
+    """Resolve trade environment from parameter or env variable."""
+    resolved = trd_env or os.getenv("FUTU_TRADE_ENV", "SIMULATE")
+    return parse_enum_value(TrdEnv, resolved, "trd_env")
+
+
+def dataframe_to_records(data: Any, wrapper_key: str) -> Dict[str, Any]:
+    """Normalize pandas DataFrame-like responses to record list payload."""
+    if hasattr(data, "to_dict"):
+        return {wrapper_key: data.to_dict("records")}
+    return {wrapper_key: data}
 
 # Market Data Tools
 @mcp.tool()
@@ -1518,6 +1561,9 @@ async def get_positions() -> Dict[str, Any]:
         - Returns all positions in the account
         - Includes both long and short positions
     """
+    """Get account positions"""
+    if not position_feature_enabled():
+        return feature_disabled_error("Position feature", "FUTU_ENABLE_POSITIONS")
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
     ret, data = trade_ctx.position_list_query()
@@ -1595,96 +1641,572 @@ async def get_margin_ratio(symbol: str) -> Dict[str, Any]:
     ret, data = trade_ctx.get_margin_ratio(symbol)
     return handle_return_data(ret, data)
 
+
+# Trading Tools
 @mcp.tool()
-async def unlock_trade(password: str, is_unlock: bool = True) -> Dict[str, Any]:
-    """Unlock or lock trading
-    
-    Args:
-        password: Trading password for unlocking
-        is_unlock: True to unlock trading, False to lock trading (default: True)
-    
-    Returns:
-        Dict containing unlock result:
-        - status: "success" or error message
-        
-    Raises:
-        - Failed to initialize trade connection
-        - INVALID_PASSWORD: Invalid password
-        - UNLOCK_TRADE_FAILED: Failed to unlock/lock trading
-        
-    Note:
-        - Requires trade connection to be initialized
-        - Real trading accounts require unlocking before placing orders
-        - Simulated accounts do not require unlocking
-        - Password is required for real trading accounts
-        - Locking trading prevents accidental order placement
-    """
+async def unlock_trade(
+    password: Optional[str] = None,
+    password_md5: Optional[str] = None,
+    is_unlock: bool = True,
+) -> Dict[str, Any]:
+    """Unlock trading operations for real/simulated accounts."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
-    try:
-        ret, data = trade_ctx.unlock_trade(password, is_unlock)
-        if ret != RET_OK:
-            return {'error': str(data)}
-        return {'status': 'success'}
-    except Exception as e:
-        return {'error': f'Failed to unlock/lock trading: {str(e)}'}
+    ret, data = trade_ctx.unlock_trade(password=password, password_md5=password_md5, is_unlock=is_unlock)
+    return handle_return_data(ret, data)
+
 
 @mcp.tool()
-async def get_acc_cash_flow(start: str, end: str, market: str = None) -> Dict[str, Any]:
-    """Get account cash flow summary
-    
-    Args:
-        start: Start date in format "YYYY-MM-DD"
-        end: End date in format "YYYY-MM-DD"
-        market: Optional market code. If not provided, returns cash flow for all markets.
-            Options:
-            - "HK": Hong Kong market
-            - "US": US market
-            - "SH": Shanghai market
-            - "SZ": Shenzhen market
-    
-    Returns:
-        Dict containing cash flow summary including:
-        - flow_list: List of cash flow entries, each containing:
-            - date: Transaction date
-            - time: Transaction time
-            - type: Transaction type
-            - amount: Transaction amount
-            - currency: Currency code
-            - balance: Account balance after transaction
-            - remark: Transaction remark
-            
-    Raises:
-        - Failed to initialize trade connection
-        - INVALID_PARAM: Invalid parameter
-        - INVALID_DATE: Invalid date format
-        - GET_ACC_CASH_FLOW_FAILED: Failed to get cash flow
-        
-    Note:
-        - Requires trade connection to be initialized
-        - Minimum API version required: 9.1.5108
-        - Returns cash flow transactions within the specified date range
-        - Includes deposits, withdrawals, dividends, fees, etc.
-        - Useful for account reconciliation and analysis
-    """
+async def place_order(
+    code: str,
+    price: float,
+    qty: float,
+    trd_side: str,
+    order_type: str = "NORMAL",
+    adjust_limit: float = 0,
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    remark: Optional[str] = None,
+    time_in_force: str = "DAY",
+    fill_outside_rth: bool = False,
+    aux_price: Optional[float] = None,
+    trail_type: Optional[str] = None,
+    trail_value: Optional[float] = None,
+    trail_spread: Optional[float] = None,
+    session: str = "N/A",
+) -> Dict[str, Any]:
+    """Place a trading order."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+
+    try:
+        side_value = parse_enum_value(TrdSide, trd_side, "trd_side")
+        order_type_value = parse_enum_value(OrderType, order_type, "order_type")
+        trd_env_value = get_trade_env_value(trd_env)
+        time_in_force_value = parse_enum_value(TimeInForce, time_in_force, "time_in_force")
+        session_value = (
+            parse_enum_value(Session, session, "session")
+            if session and session != "N/A"
+            else session
+        )
+        trail_type_value = (
+            parse_enum_value(TrailType, trail_type, "trail_type")
+            if trail_type
+            else None
+        )
+
+        ret, data = trade_ctx.place_order(
+            price=price,
+            qty=qty,
+            code=code,
+            trd_side=side_value,
+            order_type=order_type_value,
+            adjust_limit=adjust_limit,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            remark=remark,
+            time_in_force=time_in_force_value,
+            fill_outside_rth=fill_outside_rth,
+            aux_price=aux_price,
+            trail_type=trail_type_value,
+            trail_value=trail_value,
+            trail_spread=trail_spread,
+            session=session_value,
+        )
+        return handle_return_data(ret, data)
+    except Exception as e:
+        return {'error': f'Failed to place order: {str(e)}'}
+
+
+@mcp.tool()
+async def modify_order(
+    modify_order_op: str,
+    order_id: str,
+    qty: float,
+    price: float,
+    adjust_limit: float = 0,
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    aux_price: Optional[float] = None,
+    trail_type: Optional[str] = None,
+    trail_value: Optional[float] = None,
+    trail_spread: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Modify or cancel an existing order."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+
+    try:
+        modify_op_value = parse_enum_value(ModifyOrderOp, modify_order_op, "modify_order_op")
+        trd_env_value = get_trade_env_value(trd_env)
+        trail_type_value = (
+            parse_enum_value(TrailType, trail_type, "trail_type")
+            if trail_type
+            else None
+        )
+
+        ret, data = trade_ctx.modify_order(
+            modify_order_op=modify_op_value,
+            order_id=order_id,
+            qty=qty,
+            price=price,
+            adjust_limit=adjust_limit,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            aux_price=aux_price,
+            trail_type=trail_type_value,
+            trail_value=trail_value,
+            trail_spread=trail_spread,
+        )
+        return handle_return_data(ret, data)
+    except Exception as e:
+        return {'error': f'Failed to modify order: {str(e)}'}
+
+
+@mcp.tool()
+async def cancel_order(
+    order_id: str,
+    qty: float = 0,
+    price: float = 0,
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+) -> Dict[str, Any]:
+    """Cancel an existing order by order_id."""
+    return await modify_order(
+        modify_order_op="CANCEL",
+        order_id=order_id,
+        qty=qty,
+        price=price,
+        trd_env=trd_env,
+        acc_id=acc_id,
+        acc_index=acc_index,
+    )
+
+
+@mcp.tool()
+async def cancel_all_orders(
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    trdmarket: str = "N/A",
+) -> Dict[str, Any]:
+    """Cancel all cancellable orders for a trading account."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
     try:
-        # Check if the method exists (for older API versions)
-        if not hasattr(trade_ctx, 'get_acc_cash_flow'):
-            return {'error': 'get_acc_cash_flow is not available. Minimum API version required: 9.1.5108'}
-        
-        if market:
-            ret, data = trade_ctx.get_acc_cash_flow(start=start, end=end, market=market)
-        else:
-            ret, data = trade_ctx.get_acc_cash_flow(start=start, end=end)
-        
-        if ret != RET_OK:
-            return {'error': str(data)}
-        
+        trd_env_value = get_trade_env_value(trd_env)
+        trd_market_value = (
+            parse_enum_value(TrdMarket, trdmarket, "trdmarket")
+            if trdmarket and trdmarket != "N/A"
+            else trdmarket
+        )
+        ret, data = trade_ctx.cancel_all_order(
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            trdmarket=trd_market_value,
+        )
         return handle_return_data(ret, data)
     except Exception as e:
+        return {'error': f'Failed to cancel all orders: {str(e)}'}
+
+
+@mcp.tool()
+async def get_order_list(
+    order_id: str = "",
+    status_filter_list: Optional[List[str]] = None,
+    code: str = "",
+    start: str = "",
+    end: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    refresh_cache: bool = False,
+    order_market: str = "N/A",
+) -> Dict[str, Any]:
+    """Get current order list."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+
+    try:
+        status_values = parse_enum_list(OrderStatus, status_filter_list, "status_filter_list")
+        trd_env_value = get_trade_env_value(trd_env)
+        order_market_value = (
+            parse_enum_value(TrdMarket, order_market, "order_market")
+            if order_market and order_market != "N/A"
+            else order_market
+        )
+        ret, data = trade_ctx.order_list_query(
+            order_id=order_id,
+            status_filter_list=status_values,
+            code=code,
+            start=start,
+            end=end,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            refresh_cache=refresh_cache,
+            order_market=order_market_value,
+        )
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return dataframe_to_records(data, "order_list")
+    except Exception as e:
+        return {'error': f'Failed to get order list: {str(e)}'}
+
+
+@mcp.tool()
+async def get_history_order_list(
+    status_filter_list: Optional[List[str]] = None,
+    code: str = "",
+    start: str = "",
+    end: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    order_market: str = "N/A",
+) -> Dict[str, Any]:
+    """Get historical order list."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+
+    try:
+        status_values = parse_enum_list(OrderStatus, status_filter_list, "status_filter_list")
+        trd_env_value = get_trade_env_value(trd_env)
+        order_market_value = (
+            parse_enum_value(TrdMarket, order_market, "order_market")
+            if order_market and order_market != "N/A"
+            else order_market
+        )
+        ret, data = trade_ctx.history_order_list_query(
+            status_filter_list=status_values,
+            code=code,
+            start=start,
+            end=end,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            order_market=order_market_value,
+        )
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return dataframe_to_records(data, "history_order_list")
+    except Exception as e:
+        return {'error': f'Failed to get history order list: {str(e)}'}
+
+
+@mcp.tool()
+async def get_deal_list(
+    code: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    refresh_cache: bool = False,
+    deal_market: str = "N/A",
+) -> Dict[str, Any]:
+    """Get current deal list."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+
+    try:
+        trd_env_value = get_trade_env_value(trd_env)
+        deal_market_value = (
+            parse_enum_value(TrdMarket, deal_market, "deal_market")
+            if deal_market and deal_market != "N/A"
+            else deal_market
+        )
+        ret, data = trade_ctx.deal_list_query(
+            code=code,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            refresh_cache=refresh_cache,
+            deal_market=deal_market_value,
+        )
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return dataframe_to_records(data, "deal_list")
+    except Exception as e:
+        return {'error': f'Failed to get deal list: {str(e)}'}
+
+
+@mcp.tool()
+async def get_history_deal_list(
+    code: str = "",
+    start: str = "",
+    end: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    deal_market: str = "N/A",
+) -> Dict[str, Any]:
+    """Get historical deal list."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+
+    try:
+        trd_env_value = get_trade_env_value(trd_env)
+        deal_market_value = (
+            parse_enum_value(TrdMarket, deal_market, "deal_market")
+            if deal_market and deal_market != "N/A"
+            else deal_market
+        )
+        ret, data = trade_ctx.history_deal_list_query(
+            code=code,
+            start=start,
+            end=end,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            deal_market=deal_market_value,
+        )
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return dataframe_to_records(data, "history_deal_list")
+    except Exception as e:
+        return {'error': f'Failed to get history deal list: {str(e)}'}
+
+
+@mcp.tool()
+async def get_position_list(
+    code: str = "",
+    pl_ratio_min: Optional[float] = None,
+    pl_ratio_max: Optional[float] = None,
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    refresh_cache: bool = False,
+    position_market: str = "N/A",
+) -> Dict[str, Any]:
+    """Get position list with optional filtering."""
+    if not position_feature_enabled():
+        return feature_disabled_error("Position feature", "FUTU_ENABLE_POSITIONS")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+
+    try:
+        trd_env_value = get_trade_env_value(trd_env)
+        position_market_value = (
+            parse_enum_value(TrdMarket, position_market, "position_market")
+            if position_market and position_market != "N/A"
+            else position_market
+        )
+        ret, data = trade_ctx.position_list_query(
+            code=code,
+            pl_ratio_min=pl_ratio_min,
+            pl_ratio_max=pl_ratio_max,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            refresh_cache=refresh_cache,
+            position_market=position_market_value,
+        )
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return dataframe_to_records(data, "position_list")
+    except Exception as e:
+        return {'error': f'Failed to get position list: {str(e)}'}
+
+
+@mcp.tool()
+async def get_order_fee(
+    order_id_list: Optional[List[str]] = None,
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+) -> Dict[str, Any]:
+    """Get order fee details."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+    try:
+        trd_env_value = get_trade_env_value(trd_env)
+        ret, data = trade_ctx.order_fee_query(
+            order_id_list=order_id_list or [],
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+        )
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return dataframe_to_records(data, "order_fee_list")
+    except Exception as e:
+        return {'error': f'Failed to get order fee: {str(e)}'}
+
+
+@mcp.tool()
+async def get_acc_cash_flow(
+    clearing_date: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    cashflow_direction: str = "N/A",
+) -> Dict[str, Any]:
+    """Get account cash-flow details."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+    try:
+        trd_env_value = get_trade_env_value(trd_env)
+        cashflow_direction_value = (
+            parse_enum_value(CashFlowDirection, cashflow_direction, "cashflow_direction")
+            if cashflow_direction and cashflow_direction != "N/A"
+            else cashflow_direction
+        )
+        ret, data = trade_ctx.get_acc_cash_flow(
+            clearing_date=clearing_date,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            cashflow_direction=cashflow_direction_value,
+        )
+        if ret != RET_OK:
+            return {'error': str(data)}
+        return dataframe_to_records(data, "cash_flow_list")
+    except Exception as e:
         return {'error': f'Failed to get account cash flow: {str(e)}'}
+
+
+@mcp.tool()
+async def get_acc_trading_info(
+    order_type: str,
+    code: str,
+    price: float,
+    order_id: Optional[str] = None,
+    adjust_limit: float = 0,
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+    session: str = "N/A",
+) -> Dict[str, Any]:
+    """Get account trading capability before placing/modifying an order."""
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not init_trade_connection():
+        return {'error': 'Failed to initialize trade connection'}
+    try:
+        order_type_value = parse_enum_value(OrderType, order_type, "order_type")
+        trd_env_value = get_trade_env_value(trd_env)
+        session_value = (
+            parse_enum_value(Session, session, "session")
+            if session and session != "N/A"
+            else session
+        )
+        ret, data = trade_ctx.acctradinginfo_query(
+            order_type=order_type_value,
+            code=code,
+            price=price,
+            order_id=order_id,
+            adjust_limit=adjust_limit,
+            trd_env=trd_env_value,
+            acc_id=acc_id,
+            acc_index=acc_index,
+            session=session_value,
+        )
+        return handle_return_data(ret, data)
+    except Exception as e:
+        return {'error': f'Failed to get account trading info: {str(e)}'}
+
+
+@mcp.tool()
+async def get_acc_list(ctx: Context[ServerSession, None] = None) -> Dict[str, Any]:
+    """Official-name alias of get_account_list."""
+    return await get_account_list(ctx=ctx)
+
+
+@mcp.tool()
+async def get_fund_list() -> Dict[str, Any]:
+    """Official-name alias of get_funds."""
+    return await get_funds()
+
+
+@mcp.tool()
+async def get_asset_list() -> Dict[str, Any]:
+    """Asset list view based on current accinfo query."""
+    return await get_funds()
+
+
+@mcp.tool()
+async def get_history_position_list(
+    start: str = "",
+    end: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+) -> Dict[str, Any]:
+    """Compatibility tool for official trade overview; not supported by current futu Python SDK."""
+    _ = (start, end, trd_env, acc_id, acc_index)
+    if not position_feature_enabled():
+        return feature_disabled_error("Position feature", "FUTU_ENABLE_POSITIONS")
+    return {
+        "error": (
+            "get_history_position_list is not supported by the installed futu-api SDK "
+            "(OpenSecTradeContext has no history_position_list_query method)."
+        )
+    }
+
+
+@mcp.tool()
+async def get_history_asset_list(
+    start: str = "",
+    end: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+) -> Dict[str, Any]:
+    """Compatibility tool for official trade overview; not supported by current futu Python SDK."""
+    _ = (start, end, trd_env, acc_id, acc_index)
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    return {
+        "error": (
+            "get_history_asset_list is not supported by the installed futu-api SDK "
+            "(OpenSecTradeContext has no history_asset_list_query method)."
+        )
+    }
+
+
+@mcp.tool()
+async def get_history_fund_list(
+    start: str = "",
+    end: str = "",
+    trd_env: Optional[str] = None,
+    acc_id: int = 0,
+    acc_index: int = 0,
+) -> Dict[str, Any]:
+    """Compatibility tool for official trade overview; not supported by current futu Python SDK."""
+    _ = (start, end, trd_env, acc_id, acc_index)
+    if not trading_feature_enabled():
+        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    return {
+        "error": (
+            "get_history_fund_list is not supported by the installed futu-api SDK "
+            "(OpenSecTradeContext has no history_fund_list_query method)."
+        )
+    }
 
 # Market Information Tools
 @mcp.tool()
@@ -1991,7 +2513,8 @@ Arguments:
   --port                            # Futu OpenD port (default: 11111)
 
 Environment Variables:
-  FUTU_ENABLE_TRADING               # Enable trading features (default: 0)
+  FUTU_ENABLE_TRADING               # Enable active trading tools (default: 0)
+  FUTU_ENABLE_POSITIONS             # Enable position tools (default: 1)
   FUTU_TRADE_ENV                    # Trading environment: SIMULATE or REAL (default: SIMULATE)
   FUTU_SECURITY_FIRM                # Security firm: FUTUSECURITIES or FUTUINC (default: FUTUSECURITIES)
   FUTU_TRD_MARKET                   # Trading market: HK or US (default: HK)
