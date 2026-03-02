@@ -501,7 +501,9 @@ def init_trade_connection():
         trade_env = os.getenv('FUTU_TRADE_ENV', 'SIMULATE')
         security_firm = getattr(SecurityFirm, os.getenv('FUTU_SECURITY_FIRM', 'FUTUSECURITIES'))
         
-        trd_market = os.getenv('FUTU_TRD_MARKET', 'HK')
+        trd_market_str = os.getenv('FUTU_TRD_MARKET', 'HK')
+        # TrdMarket enum value must be used, not a raw string
+        trd_market = getattr(TrdMarket, trd_market_str, TrdMarket.HK)
         
         # 创建交易上下文
         trade_ctx = OpenSecTradeContext(
@@ -2537,7 +2539,7 @@ Environment Variables:
     parser.add_argument(
         '--version', 
         action='version', 
-        version='futu-stock-mcp-server 1.0.1'
+        version='futu-stock-mcp-server 1.0.2'
     )
     
     args = parser.parse_args()
