@@ -506,8 +506,9 @@ def init_trade_connection():
         trd_market = getattr(TrdMarket, trd_market_str, TrdMarket.HK)
         
         # 创建交易上下文
+        # 使用 TrdMarket.ALL 以获取所有市场的账户，避免因市场过滤导致账户列表为空
         trade_ctx = OpenSecTradeContext(
-            filter_trdmarket=trd_market,
+            filter_trdmarket=TrdMarket.ALL,
             host=_futu_host,
             port=_futu_port,
             security_firm=security_firm
@@ -530,41 +531,39 @@ def init_trade_connection():
         ret, data = trade_ctx.get_acc_list()
         if ret != RET_OK:
             logger.warning(f"Failed to get account list: {data}")
-            cleanup_connections()
-            return False
-            
-        if data is None or len(data) == 0:
-            logger.warning("No trading accounts available")
-            cleanup_connections()
-            return False
-            
-        # Convert DataFrame to records if necessary
-        if hasattr(data, 'to_dict'):
-            accounts = data.to_dict('records')
-        else:
-            accounts = data
-            
-        logger.info(f"Found {len(accounts)} trading account(s)")
+            # 即使获取账户列表失败，交易上下文本身可能仍然可用，不做 cleanup
+            # 继续初始化，让后续工具调用自行处理错误
         
-        # 检查账户状态
-        for acc in accounts:
-            if isinstance(acc, dict):
-                acc_id = acc.get('acc_id', 'Unknown')
-                acc_type = acc.get('acc_type', 'Unknown')
-                acc_state = acc.get('acc_state', 'Unknown')
-                trd_env = acc.get('trd_env', 'Unknown')
-                trd_market = acc.get('trd_market', 'Unknown')
+        if data is None or len(data) == 0:
+            logger.warning("No trading accounts available for the current filter; trade context still initialized")
+        else:
+            # Convert DataFrame to records if necessary
+            if hasattr(data, 'to_dict'):
+                accounts = data.to_dict('records')
             else:
-                acc_id = getattr(acc, 'acc_id', 'Unknown')
-                acc_type = getattr(acc, 'acc_type', 'Unknown')
-                acc_state = getattr(acc, 'acc_state', 'Unknown')
-                trd_env = getattr(acc, 'trd_env', 'Unknown')
-                trd_market = getattr(acc, 'trd_market', 'Unknown')
+                accounts = data
                 
-            logger.info(f"Account: {acc_id}, Type: {acc_type}, State: {acc_state}, Environment: {trd_env}, Market: {trd_market}")
+            logger.info(f"Found {len(accounts)} trading account(s)")
+            
+            # 检查账户状态
+            for acc in accounts:
+                if isinstance(acc, dict):
+                    acc_id = acc.get('acc_id', 'Unknown')
+                    acc_type = acc.get('acc_type', 'Unknown')
+                    acc_state = acc.get('acc_state', 'Unknown')
+                    trd_env = acc.get('trd_env', 'Unknown')
+                    trd_market_acc = acc.get('trd_market', 'Unknown')
+                else:
+                    acc_id = getattr(acc, 'acc_id', 'Unknown')
+                    acc_type = getattr(acc, 'acc_type', 'Unknown')
+                    acc_state = getattr(acc, 'acc_state', 'Unknown')
+                    trd_env = getattr(acc, 'trd_env', 'Unknown')
+                    trd_market_acc = getattr(acc, 'trd_market', 'Unknown')
+                    
+                logger.info(f"Account: {acc_id}, Type: {acc_type}, State: {acc_state}, Environment: {trd_env}, Market: {trd_market_acc}")
         
         _is_trade_initialized = True
-        logger.info(f"Successfully initialized trade connection (Trade Environment: {trade_env}, Security Firm: {security_firm}, Market: {trd_market})")
+        logger.info(f"Successfully initialized trade connection (Trade Environment: {trade_env}, Security Firm: {security_firm}, Market: {trd_market_str})")
         return True
             
     except Exception as e:
@@ -2539,7 +2538,7 @@ Environment Variables:
     parser.add_argument(
         '--version', 
         action='version', 
-        version='futu-stock-mcp-server 1.0.2'
+        version='futu-stock-mcp-server 1.0.3'
     )
     
     args = parser.parse_args()
