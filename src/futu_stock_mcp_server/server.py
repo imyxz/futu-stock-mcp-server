@@ -506,9 +506,8 @@ def init_trade_connection():
         trd_market = getattr(TrdMarket, trd_market_str, TrdMarket.HK)
         
         # 创建交易上下文
-        # 使用 TrdMarket.ALL 以获取所有市场的账户，避免因市场过滤导致账户列表为空
+        # 不传 filter_trdmarket（使用默认值），避免因市场过滤导致账户列表为空
         trade_ctx = OpenSecTradeContext(
-            filter_trdmarket=TrdMarket.ALL,
             host=_futu_host,
             port=_futu_port,
             security_firm=security_firm
@@ -2538,7 +2537,7 @@ Environment Variables:
     parser.add_argument(
         '--version', 
         action='version', 
-        version='futu-stock-mcp-server 1.0.3'
+        version='futu-stock-mcp-server 1.0.4'
     )
     
     args = parser.parse_args()
