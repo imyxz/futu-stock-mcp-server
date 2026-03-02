@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Futu Stock MCP Server PyPI 发布脚本 (Bash)
-# 自动切换虚拟环境，构建并发布到PyPI
+# 自动递增 patch 版本号，构建发布到 PyPI，然后推送代码和 tag
 
 set -e  # 遇到错误立即退出
 
@@ -59,28 +59,39 @@ rm -rf dist/ build/
 find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
 mkdir -p dist/
 
-# 读取当前版本（兼容 Python 3.10 及以下版本）
+# 读取当前版本
 CURRENT_VERSION=$(python -c "
-import sys
-if sys.version_info >= (3, 11):
-    import tomllib
-    with open('pyproject.toml', 'rb') as f:
-        data = tomllib.load(f)
-    print(data['project']['version'])
+import re
+with open('pyproject.toml', 'r') as f:
+    content = f.read()
+match = re.search(r'^version\s*=\s*[\"\'](.*?)[\"\']\s*$', content, re.MULTILINE)
+if match:
+    print(match.group(1))
 else:
-    # 对于 Python 3.10 及以下版本，使用简单的文本解析
-    import re
-    with open('pyproject.toml', 'r') as f:
-        content = f.read()
-    match = re.search(r'version\s*=\s*[\"\'](.*?)[\"\']', content)
-    if match:
-        print(match.group(1))
-    else:
-        print('unknown')
-        exit(1)
+    print('unknown')
+    exit(1)
 ")
 
 echo "📋 当前版本: v$CURRENT_VERSION"
+
+# 自动递增 patch 版本号（x.y.z → x.y.z+1）
+NEW_VERSION=$(python -c "
+parts = '$CURRENT_VERSION'.split('.')
+parts[-1] = str(int(parts[-1]) + 1)
+print('.'.join(parts))
+")
+
+echo "🆙 新版本: v$NEW_VERSION"
+
+# 更新 pyproject.toml 中的版本号
+sed -i.bak "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" pyproject.toml
+rm -f pyproject.toml.bak
+
+# 更新 server.py 中的版本号
+sed -i.bak "s/version='futu-stock-mcp-server [^']*'/version='futu-stock-mcp-server $NEW_VERSION'/" src/futu_stock_mcp_server/server.py
+rm -f src/futu_stock_mcp_server/server.py.bak
+
+echo "✅ 版本号已更新: $CURRENT_VERSION → $NEW_VERSION"
 
 # 构建包
 echo "🔨 构建包..."
@@ -94,60 +105,29 @@ python -m twine check dist/*
 echo "📦 构建的文件:"
 ls -la dist/
 
-# 询问是否发布到 PyPI
+# ===== 先发布到 PyPI =====
 echo ""
-read -p "是否发布 v$CURRENT_VERSION 到 PyPI? (y/N): " -n 1 -r
-echo
+echo "🚀 发布 v$NEW_VERSION 到 PyPI..."
 
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "🚀 发布到 PyPI..."
-
-    # 检查是否有 PyPI token
-    if [ -z "$TWINE_PASSWORD" ]; then
-        echo "⚠️  建议设置 TWINE_PASSWORD 环境变量"
-        echo "💡 或者在 ~/.pypirc 中配置认证信息"
-    fi
-
-    # 上传到 PyPI
-    python -m twine upload dist/*
-
-    if [ $? -eq 0 ]; then
-        echo "✅ 发布成功！"
-        echo "🔗 查看包: https://pypi.org/project/futu-stock-mcp-server/$CURRENT_VERSION/"
-
-        # 创建 git tag
-        read -p "是否创建 git tag v$CURRENT_VERSION? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            git tag -a "v$CURRENT_VERSION" -m "Release v$CURRENT_VERSION"
-            echo "🏷️  Git tag v$CURRENT_VERSION 已创建"
-
-            read -p "是否推送 tag 到远程仓库? (y/N): " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                git push origin "v$CURRENT_VERSION"
-                echo "📤 Tag 已推送到远程仓库"
-            fi
-        fi
-    else
-        echo "❌ 发布失败"
-        exit 1
-    fi
-else
-    echo "📦 包已构建完成，位于 dist/ 目录"
-    echo "💡 要手动发布到 PyPI，请运行:"
-    echo "   python -m twine upload dist/*"
+if [ -z "$TWINE_PASSWORD" ]; then
+    echo "⚠️  未设置 TWINE_PASSWORD，将使用 ~/.pypirc 中的认证信息"
 fi
 
+python -m twine upload dist/*
+
+echo "✅ 发布成功！"
+echo "🔗 查看包: https://pypi.org/project/futu-stock-mcp-server/$NEW_VERSION/"
+
+# ===== 发布成功后，推送代码和 tag =====
+echo ""
+echo "📤 提交版本变更并推送代码..."
+
+git add pyproject.toml src/futu_stock_mcp_server/server.py
+git commit -m "chore: bump version to $NEW_VERSION"
+git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
+git push origin HEAD
+git push origin "v$NEW_VERSION"
+
+echo "🏷️  Git tag v$NEW_VERSION 已推送到远程仓库"
 echo ""
 echo "🎉 完成！"
-
-# 可选：清理构建文件
-read -p "是否清理构建文件? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "🧹 清理构建文件..."
-    rm -rf build/
-    find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
-    echo "✅ 清理完成"
-fi

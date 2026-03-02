@@ -129,21 +129,13 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-5. Copy the environment file and configure:
+5. (可选) 如需从源码直接运行，通过环境变量配置服务：
 ```bash
-cp .env.example .env
+export FUTU_HOST=127.0.0.1
+export FUTU_PORT=11111
 ```
 
-Edit the `.env` file with your server settings:
-```
-FUTU_HOST=127.0.0.1
-FUTU_PORT=11111
-FUTU_ENABLE_TRADING=0
-FUTU_ENABLE_POSITIONS=1
-FUTU_TRADE_ENV=SIMULATE
-FUTU_SECURITY_FIRM=FUTUSECURITIES
-FUTU_TRD_MARKET=HK
-```
+> **推荐方式**：在 MCP 客户端配置文件中使用 `env` 字段注入，无需创建 `.env` 文件，见下方 [MCP Server 配置](#-mcp-server-配置) 章节。
 
 ## Development
 
@@ -195,12 +187,33 @@ ruff format .
    - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-2. **添加服务器配置**：
+2. **添加服务器配置**（所有参数均通过 `env` 字段注入，无需 `.env` 文件）：
 ```json
 {
   "mcpServers": {
     "futu-stock": {
       "command": "futu-mcp-server",
+      "env": {
+        "FUTU_HOST": "127.0.0.1",
+        "FUTU_PORT": "11111",
+        "FUTU_ENABLE_POSITIONS": "1",
+        "FUTU_ENABLE_TRADING": "0",
+        "FUTU_TRADE_ENV": "SIMULATE",
+        "FUTU_SECURITY_FIRM": "FUTUSECURITIES",
+        "FUTU_TRD_MARKET": "HK"
+      }
+    }
+  }
+}
+```
+
+3. **使用 `python` 命令启动**（适用于源码开发场景）：
+```json
+{
+  "mcpServers": {
+    "futu-stock": {
+      "command": "python",
+      "args": ["-m", "futu_stock_mcp_server.server"],
       "env": {
         "FUTU_HOST": "127.0.0.1",
         "FUTU_PORT": "11111"
@@ -210,7 +223,7 @@ ruff format .
 }
 ```
 
-3. **故障排除配置**：
+4. **故障排除配置**：
 如果上述配置不工作，可以尝试使用完整路径：
 ```json
 {
@@ -289,17 +302,17 @@ python -m futu_stock_mcp_server.server
 ```
 
 ### 2. 环境变量配置
-创建 `.env` 文件或设置环境变量：
-```bash
-FUTU_HOST=127.0.0.1
-FUTU_PORT=11111
-FUTU_ENABLE_TRADING=0
-FUTU_ENABLE_POSITIONS=1
-FUTU_TRADE_ENV=SIMULATE
-FUTU_SECURITY_FIRM=FUTUSECURITIES
-FUTU_TRD_MARKET=HK
-FUTU_DEBUG_MODE=0
-```
+
+推荐在 MCP 客户端的 `env` 字段中直接配置，无需 `.env` 文件：
+
+| 环境变量 | 说明 | 默认值 |
+|---|---|---|
+| `FUTU_HOST` | OpenD 地址 | `127.0.0.1` |
+| `FUTU_PORT` | OpenD 端口 | `11111` |
+| `FUTU_TRADE_ENV` | 交易环境 (`SIMULATE`/`REAL`) | `SIMULATE` |
+| `FUTU_SECURITY_FIRM` | 券商 (`FUTUSECURITIES`/`FUTUINC`) | `FUTUSECURITIES` |
+| `FUTU_TRD_MARKET` | 交易市场 (`HK`/`US`) | `HK` |
+| `FUTU_DEBUG_MODE` | 调试日志开关 (`0`/`1`) | `0` |
 
 ### 3. 验证连接
 启动服务器后，你应该看到类似的日志：
@@ -413,7 +426,12 @@ if __name__ == "__main__":
 
 ## Changelog
 
-Latest updates (`2026-03-02`):
+Latest updates (`2026-03-02`) - v0.1.5:
+- **环境变量优先配置**：`FUTU_HOST` / `FUTU_PORT` 现在直接通过 MCP 客户端 `env` 字段注入，无需 `.env` 文件。
+- 移除 `python-dotenv` 导入，简化依赖。
+- 新增 `python -m` 启动方式的配置示例。
+
+Previous updates (`2026-03-02`) - v0.1.4:
 - Added trading MCP tools: `unlock_trade`, `place_order`, `modify_order`, `cancel_order`, `cancel_all_orders`, order/deal query tools, fee/cashflow tools.
 - Added position and trade feature switches: `FUTU_ENABLE_POSITIONS`, `FUTU_ENABLE_TRADING`.
 - Added official Futu API to MCP mapping doc: [docs/FUTU_API_MCP_COVERAGE.md](docs/FUTU_API_MCP_COVERAGE.md).

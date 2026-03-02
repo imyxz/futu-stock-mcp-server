@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.5] - 2026-03-02
+
+### Changed
+- **环境变量优先配置**：`FUTU_HOST` 和 `FUTU_PORT` 现在可直接通过 MCP 客户端配置的 `env` 字段注入，无需依赖 `.env` 文件
+  - `--host` 参数默认值优先读取 `FUTU_HOST` 环境变量，回退到 `127.0.0.1`
+  - `--port` 参数默认值优先读取 `FUTU_PORT` 环境变量，回退到 `11111`
+  - 其他配置项（`FUTU_TRADE_ENV`、`FUTU_SECURITY_FIRM`、`FUTU_TRD_MARKET`、`FUTU_DEBUG_MODE`）同样支持通过 `env` 字段注入
+
+### Removed
+- 移除 `python-dotenv` 依赖导入，不再需要 `.env` 文件即可配置服务
+
+### Migration
+在 MCP 客户端配置中使用 `env` 字段替代 `.env` 文件：
+```json
+{
+  "futu-stock": {
+    "command": "futu-mcp-server",
+    "env": {
+      "FUTU_HOST": "127.0.0.1",
+      "FUTU_PORT": "11111",
+      "FUTU_ENABLE_POSITIONS": "1",
+      "FUTU_TRADE_ENV": "SIMULATE"
+    }
+  }
+}
+```
+
 ## [0.1.4] - 2025-01-02
 
 ### Enhanced

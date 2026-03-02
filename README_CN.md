@@ -84,21 +84,13 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-5. 复制并配置环境文件：
+5. (可选) 如需从源码直接运行，通过环境变量配置服务：
 ```bash
-cp .env.example .env
+export FUTU_HOST=127.0.0.1
+export FUTU_PORT=11111
 ```
 
-编辑 `.env` 文件，设置服务器配置：
-```
-FUTU_HOST=127.0.0.1
-FUTU_PORT=11111
-FUTU_ENABLE_TRADING=0
-FUTU_ENABLE_POSITIONS=1
-FUTU_TRADE_ENV=SIMULATE
-FUTU_SECURITY_FIRM=FUTUSECURITIES
-FUTU_TRD_MARKET=HK
-```
+> **推荐方式**：在 MCP 客户端配置文件中使用 `env` 字段注入，无需创建 `.env` 文件。
 
 ## 开发指南
 
@@ -145,9 +137,18 @@ ruff format .
 ## 使用方法
 
 1. 启动服务器：
+
+**方式一**：通过已安装的命令：
 ```bash
-python -m futu_stock_mcp_server.server
+FUTU_HOST=127.0.0.1 FUTU_PORT=11111 futu-mcp-server
 ```
+
+**方式二**：通过 `python -m` 启动（适用于源码开发）：
+```bash
+FUTU_HOST=127.0.0.1 FUTU_PORT=11111 python -m futu_stock_mcp_server.server
+```
+
+> **推荐**：在 MCP 客户端配置中使用 `env` 字段注入环境变量，见下方配置示例。
 
 2. 使用 MCP 客户端连接服务器：
 ```python
@@ -156,8 +157,11 @@ from mcp.client.stdio import stdio_client
 
 async def main():
     server_params = StdioServerParameters(
-        command="python",
-        args=["src/server.py"]
+        command="futu-mcp-server",
+        env={
+            "FUTU_HOST": "127.0.0.1",
+            "FUTU_PORT": "11111"
+        }
     )
     
     async with stdio_client(server_params) as (read, write):
