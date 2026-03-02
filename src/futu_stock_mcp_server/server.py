@@ -104,7 +104,6 @@ except ImportError as e:
 import json
 import asyncio
 from loguru import logger
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import TextContent, PromptMessage
 from mcp.server import Server
@@ -2524,21 +2523,21 @@ Environment Variables:
     
     parser.add_argument(
         '--host',
-        default='127.0.0.1',
-        help='Futu OpenD host address (default: 127.0.0.1)'
+        default=os.getenv('FUTU_HOST', '127.0.0.1'),
+        help='Futu OpenD host address (default: env FUTU_HOST or 127.0.0.1)'
     )
 
     parser.add_argument(
         '--port',
         type=int,
-        default=11111,
-        help='Futu OpenD port number (default: 11111)'
+        default=int(os.getenv('FUTU_PORT', '11111')),
+        help='Futu OpenD port number (default: env FUTU_PORT or 11111)'
     )
 
     parser.add_argument(
         '--version', 
         action='version', 
-        version='futu-stock-mcp-server 0.1.3'
+        version='futu-stock-mcp-server 1.0.1'
     )
     
     args = parser.parse_args()
