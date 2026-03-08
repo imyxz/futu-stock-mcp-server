@@ -4,6 +4,13 @@ import warnings
 import logging
 import argparse
 
+# Load .env from current working directory so FUTU_*, MCP_* etc. take effect
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # CRITICAL: Check if this is a help command before setting MCP mode
 _is_help_command = any(arg in ['--help', '-h', '--version', '-v'] for arg in sys.argv)
 
@@ -110,7 +117,16 @@ from mcp.server import Server
 from mcp.server.session import ServerSession
 import atexit
 import signal
-import fcntl
+import sys
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows: use msvcrt for file locking
+
+if sys.platform == "win32":
+    import msvcrt
+
 import psutil
 import time
 from datetime import datetime
@@ -361,12 +377,43 @@ def cleanup_connections():
     except Exception as e:
         logger.error(f"Error during connection cleanup: {str(e)}")
 
+def _acquire_lock_fd(fd):
+    """Try to acquire exclusive lock on fd. Returns True if acquired, False otherwise. Cross-platform (Unix fcntl, Windows msvcrt)."""
+    if fcntl is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (IOError, OSError):
+            return False
+    if sys.platform == "win32":
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except (OSError, IOError):
+            return False
+    return False
+
+
+def _release_lock_fd(fd):
+    """Release lock on fd. Cross-platform."""
+    if fcntl is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+    elif sys.platform == "win32":
+        try:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except Exception:
+            pass
+
+
 def release_lock():
     """Release the process lock"""
     global lock_fd
     try:
         if lock_fd is not None:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            _release_lock_fd(lock_fd)
             os.close(lock_fd)
             lock_fd = None
         if os.path.exists(LOCK_FILE):
@@ -437,11 +484,19 @@ def acquire_lock():
         # 创建锁文件
         lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR)
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError:
+            if sys.platform == "win32":
+                # Windows msvcrt.locking needs at least 1 byte in file
+                try:
+                    os.write(lock_fd, b"\x00")
+                except (OSError, IOError):
+                    pass
+            if not _acquire_lock_fd(lock_fd):
+                os.close(lock_fd)
+                return None
+        except (IOError, OSError):
             os.close(lock_fd)
             return None
-            
+
         # 写入 PID 文件
         with open(PID_FILE, 'w') as f:
             f.write(str(os.getpid()))
@@ -598,7 +653,7 @@ def init_futu_connection(host: str = '127.0.0.1', port: int = 11111) -> bool:
         # This avoids startup failure when trade permissions are not available.
         trade_ctx = None
         _is_trade_initialized = False
-        if trading_feature_enabled() or position_feature_enabled():
+        if trading_feature_enabled() or position_feature_enabled() or trade_read_feature_enabled():
             logger.info("Trade-related features enabled; trade context will initialize lazily on first use")
 
         logger.info("Futu connection initialized successfully")
@@ -619,8 +674,23 @@ async def lifespan(server: Server):
         # Shutdown - ensure connections are closed
         cleanup_all()
 
-# Create MCP server instance
-mcp = FastMCP("futu-stock-server", lifespan=lifespan)
+# Parse --mcp-host / --mcp-port from argv early so FastMCP(host=..., port=...) can use them
+for i, arg in enumerate(sys.argv):
+    if arg in ("--mcp-host", "-mcp-host") and i + 1 < len(sys.argv):
+        os.environ.setdefault("MCP_HTTP_HOST", sys.argv[i + 1])
+    elif arg in ("--mcp-port", "-mcp-port") and i + 1 < len(sys.argv):
+        os.environ.setdefault("MCP_HTTP_PORT", sys.argv[i + 1])
+
+# Create MCP server instance (host/port used when transport="streamable-http")
+try:
+    mcp = FastMCP(
+        "futu-stock-server",
+        lifespan=lifespan,
+        host=os.getenv("MCP_HTTP_HOST", "0.0.0.0"),
+        port=int(os.getenv("MCP_HTTP_PORT", "8000")),
+    )
+except TypeError:
+    mcp = FastMCP("futu-stock-server", lifespan=lifespan)
 
 def handle_return_data(ret: int, data: Any) -> Dict[str, Any]:
     """Helper function to handle return data from Futu API
@@ -665,6 +735,16 @@ def trading_feature_enabled() -> bool:
     return is_env_flag_enabled("FUTU_ENABLE_TRADING", "0")
 
 
+def trade_read_feature_enabled() -> bool:
+    """Whether read-only trade tools (order list, deal list, history) are enabled."""
+    return is_env_flag_enabled("FUTU_ENABLE_TRADE_READ", "0")
+
+
+def trading_or_trade_read_enabled() -> bool:
+    """True if either full trading or read-only trade (order/deal list) is enabled."""
+    return trading_feature_enabled() or trade_read_feature_enabled()
+
+
 def position_feature_enabled() -> bool:
     """Whether position/holding tools are enabled."""
     return is_env_flag_enabled("FUTU_ENABLE_POSITIONS", "1")
@@ -673,6 +753,13 @@ def position_feature_enabled() -> bool:
 def feature_disabled_error(feature: str, env_key: str) -> Dict[str, Any]:
     """Standardized feature-disabled response."""
     return {"error": f"{feature} is disabled. Set {env_key}=1 to enable."}
+
+
+def trade_read_disabled_error() -> Dict[str, Any]:
+    """Error when trade read tools are disabled (order/deal list)."""
+    return {
+        "error": "Order/deal read is disabled. Set FUTU_ENABLE_TRADING=1 or FUTU_ENABLE_TRADE_READ=1 to enable."
+    }
 
 
 def parse_enum_value(enum_cls: Any, raw_value: Any, field_name: str) -> Any:
@@ -1837,8 +1924,8 @@ async def get_order_list(
     order_market: str = "N/A",
 ) -> Dict[str, Any]:
     """Get current order list."""
-    if not trading_feature_enabled():
-        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not trading_or_trade_read_enabled():
+        return trade_read_disabled_error()
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
 
@@ -1881,8 +1968,8 @@ async def get_history_order_list(
     order_market: str = "N/A",
 ) -> Dict[str, Any]:
     """Get historical order list."""
-    if not trading_feature_enabled():
-        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not trading_or_trade_read_enabled():
+        return trade_read_disabled_error()
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
 
@@ -1921,8 +2008,8 @@ async def get_deal_list(
     deal_market: str = "N/A",
 ) -> Dict[str, Any]:
     """Get current deal list."""
-    if not trading_feature_enabled():
-        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not trading_or_trade_read_enabled():
+        return trade_read_disabled_error()
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
 
@@ -1959,8 +2046,8 @@ async def get_history_deal_list(
     deal_market: str = "N/A",
 ) -> Dict[str, Any]:
     """Get historical deal list."""
-    if not trading_feature_enabled():
-        return feature_disabled_error("Trading feature", "FUTU_ENABLE_TRADING")
+    if not trading_or_trade_read_enabled():
+        return trade_read_disabled_error()
     if not init_trade_connection():
         return {'error': 'Failed to initialize trade connection'}
 
@@ -2513,11 +2600,15 @@ Arguments:
 
 Environment Variables:
   FUTU_ENABLE_TRADING               # Enable active trading tools (default: 0)
+  FUTU_ENABLE_TRADE_READ            # Enable read-only trade tools: get_order_list, get_deal_list, get_history_* (default: 0)
   FUTU_ENABLE_POSITIONS             # Enable position tools (default: 1)
   FUTU_TRADE_ENV                    # Trading environment: SIMULATE or REAL (default: SIMULATE)
   FUTU_SECURITY_FIRM                # Security firm: FUTUSECURITIES or FUTUINC (default: FUTUSECURITIES)
   FUTU_TRD_MARKET                   # Trading market: HK or US (default: HK)
   FUTU_DEBUG_MODE                   # Enable debug logging (default: 0)
+  MCP_TRANSPORT                     # stdio or streamable-http (default: stdio)
+  MCP_HTTP_HOST                     # Bind host for streamable-http (default: 0.0.0.0)
+  MCP_HTTP_PORT                     # Bind port for streamable-http (default: 8000)
         """
     )
     
@@ -2535,11 +2626,29 @@ Environment Variables:
     )
 
     parser.add_argument(
-        '--version', 
-        action='version', 
+        '--transport',
+        choices=['stdio', 'streamable-http'],
+        default=os.getenv('MCP_TRANSPORT', 'stdio'),
+        help='MCP transport: stdio (default, for local/client-spawned) or streamable-http (for remote access over HTTP)'
+    )
+    parser.add_argument(
+        '--mcp-host',
+        default=os.getenv('MCP_HTTP_HOST', '0.0.0.0'),
+        help='Bind host for streamable-http (default: 0.0.0.0 for all interfaces)'
+    )
+    parser.add_argument(
+        '--mcp-port',
+        type=int,
+        default=int(os.getenv('MCP_HTTP_PORT', '8000')),
+        help='Bind port for streamable-http (default: 8000)'
+    )
+
+    parser.add_argument(
+        '--version',
+        action='version',
         version='futu-stock-mcp-server 1.0.4'
     )
-    
+
     args = parser.parse_args()
     
     try:
@@ -2557,29 +2666,44 @@ Environment Variables:
 
         # Disable Python buffering to ensure clean MCP JSON communication
 
-        # Clean up stale processes and acquire lock
-        cleanup_stale_processes()
+        # For stdio mode only: clean up stale processes and acquire lock
+        if args.transport == 'stdio':
+            cleanup_stale_processes()
+            lock_fd = acquire_lock()
+            if lock_fd is None:
+                logger.error("Failed to acquire lock. Another instance may be running.")
+                sys.exit(1)
+        else:
+            lock_fd = None
 
-        lock_fd = acquire_lock()
-        if lock_fd is None:
-            # Use file logging only - no stderr output in MCP mode
-            logger.error("Failed to acquire lock. Another instance may be running.")
-            sys.exit(1)
-            
         # Set up signal handlers
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-            
+
         # Initialize Futu connection with file logging only
         logger.info("Initializing Futu connection for MCP server...")
         if init_futu_connection(args.host, args.port):
             logger.info("Successfully initialized Futu connection")
-            logger.info("Starting MCP server in stdio mode - stdout reserved for JSON communication")
+            if args.transport == 'streamable-http':
+                logger.info("Starting MCP server in streamable-http mode - listen %s:%s", args.mcp_host, args.mcp_port)
+            else:
+                logger.info("Starting MCP server in stdio mode - stdout reserved for JSON communication")
 
             try:
-                # Run MCP server - stdout will be used for JSON communication only
-                logger.info("About to call mcp.run() without transport parameter")
-                mcp.run()
+                if args.transport == 'streamable-http':
+                    from futu_stock_mcp_server.skill_server import run_skill_server
+                    run_skill_server(args.mcp_host, args.mcp_port)
+                    skill_port = args.mcp_port + 1
+                    logger.info(
+                        "Skill URL (share with agent to add skill): http://<host>:%s/skill (replace <host> with this machine IP or hostname)",
+                        skill_port,
+                    )
+                    # host/port are passed in FastMCP(...) at module load (from argv/env)
+                    os.environ["MCP_HTTP_HOST"] = str(args.mcp_host)
+                    os.environ["MCP_HTTP_PORT"] = str(args.mcp_port)
+                    mcp.run(transport="streamable-http")
+                else:
+                    mcp.run()
                 logger.info("mcp.run() completed successfully")
             except KeyboardInterrupt:
                 logger.info("Received keyboard interrupt, shutting down gracefully...")

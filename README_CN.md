@@ -92,6 +92,79 @@ export FUTU_PORT=11111
 
 > **推荐方式**：在 MCP 客户端配置文件中使用 `env` 字段注入，无需创建 `.env` 文件。
 
+## 内网部署与 OpenClaw 远程连接
+
+当 MCP 服务器和 OpenD 运行在内网另一台机器（例如 `192.168.1.100`），而 OpenClaw 运行在你本机时，需要使用 **Streamable HTTP** 传输，让 OpenClaw 通过 HTTP 访问内网机器上的 MCP 服务。
+
+### 1. 在内网机器上（运行 OpenD + MCP 的机器）
+
+- **安装并启动 OpenD**（富途网关），确保监听默认 `127.0.0.1:11111`（或你配置的端口）。
+- **安装并启动 MCP 服务器为 HTTP 模式**，监听所有网卡以便内网访问：
+
+```bash
+# 方式一：命令行参数
+futu-mcp-server --host 127.0.0.1 --port 11111 --transport streamable-http --mcp-host 0.0.0.0 --mcp-port 8000
+
+# 方式二：环境变量
+export FUTU_HOST=127.0.0.1
+export FUTU_PORT=11111
+export MCP_TRANSPORT=streamable-http
+export MCP_HTTP_HOST=0.0.0.0
+export MCP_HTTP_PORT=8000
+futu-mcp-server
+```
+
+- 确保防火墙放行内网对 **8000** 端口的访问（仅限内网即可）。
+- MCP 的 HTTP 端点为基础路径：`/mcp`（完整 URL 示例：`http://192.168.1.100:8000/mcp`）。
+
+### 2. 在 OpenClaw 所在机器上
+
+在 OpenClaw 的 MCP 配置中，添加**通过 URL 连接**的 futu-stock 服务器（若 OpenClaw 支持 Streamable HTTP 的 URL 配置）：
+
+- **若使用 URL 配置**（如 MCP Bridge 等插件的 `url` 字段）：
+  - 将 MCP 服务器地址设为内网机器的 Streamable HTTP 地址，例如：
+  - `http://192.168.1.100:8000/mcp`  
+  - 将 `192.168.1.100` 替换为你内网机器的实际 IP 或主机名。
+
+- **若 OpenClaw 仅支持“命令 + 参数”方式**（即本地拉起进程、stdio）：
+  - 无法直接连接“另一台机器上的进程”，需要在内网机器上暴露 HTTP 后，用上面的 URL 方式连接；或使用 SSH 隧道（见下）。
+
+### 3. 可选：通过 SSH 隧道（仅能访问 SSH 时）
+
+若 OpenClaw 只能配“命令”，且你可以在本机执行 SSH 到内网机器，可用隧道把内网 HTTP 映射到本机，再让 OpenClaw 连本机 URL：
+
+```bash
+# 在本机执行：将内网 192.168.1.100:8000 映射到本机 8000
+ssh -L 8000:127.0.0.1:8000 user@192.168.1.100 -N
+```
+
+然后在 OpenClaw 中配置 MCP 服务器 URL 为：`http://127.0.0.1:8000/mcp`。
+
+### 4. Skill URL：一键发给 Agent 添加 Skill
+
+以 **streamable-http** 模式启动后，会同时启动 **Skill 服务**，端口为 MCP 端口 + 1（例如 MCP 在 8000 时，Skill 在 **8001**）。
+
+- **Skill 拉取地址**：`http://<内网机器IP或主机名>:<MCP端口+1>/skill`  
+  例如：`http://192.168.1.100:8001/skill`
+- 用浏览器或 Agent 访问该 URL，会得到一份 **已填好当前 MCP 地址** 的 OpenClaw 内网 Skill（Markdown）。Agent 可根据该 Skill 自行添加 MCP 服务器，无需再改 URL。
+- 若 Agent 从其他网络访问（如通过域名/反向代理），可设置 **`MCP_PUBLIC_URL`** 为实际可访问的 MCP 地址（含 `/mcp`），Skill 内容中的服务器地址会替换为该值。  
+  例：`export MCP_PUBLIC_URL=https://mcp.example.com/mcp`
+
+### 5. 环境变量小结（内网机器）
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `FUTU_HOST` | OpenD 监听地址（本机） | `127.0.0.1` |
+| `FUTU_PORT` | OpenD 端口 | `11111` |
+| `MCP_TRANSPORT` | 传输方式 | `streamable-http` |
+| `MCP_HTTP_HOST` | MCP HTTP 监听地址 | `0.0.0.0`（内网可访问） |
+| `MCP_HTTP_PORT` | MCP HTTP 端口 | `8000` |
+| `MCP_PUBLIC_URL` | 可选，Skill 中使用的 MCP 地址（供 Agent 连接） | `http://192.168.1.100:8000/mcp` |
+
+Streamable HTTP 模式不需要进程锁；同一台内网机器上可以同时跑一个 stdio 实例（供本机客户端）和一个 streamable-http 实例（供 OpenClaw 等远程客户端）。Skill 服务与 MCP 同进程，监听 `MCP_HTTP_PORT + 1`。
+
+> **说明**：Streamable HTTP 依赖 `mcp` 包对 `run(transport="streamable-http", ...)` 的支持。若启动报错，请升级：`pip install -U "mcp[cli]>=1.6.0"`。
+
 ## 开发指南
 
 ### 依赖管理
@@ -138,15 +211,18 @@ ruff format .
 
 1. 启动服务器：
 
-**方式一**：通过已安装的命令：
+**本地 stdio 模式**（默认，由 MCP 客户端本地拉起进程）：
 ```bash
 FUTU_HOST=127.0.0.1 FUTU_PORT=11111 futu-mcp-server
-```
-
-**方式二**：通过 `python -m` 启动（适用于源码开发）：
-```bash
+# 或
 FUTU_HOST=127.0.0.1 FUTU_PORT=11111 python -m futu_stock_mcp_server.server
 ```
+
+**内网 HTTP 模式**（供 OpenClaw 等远程通过 URL 连接）：
+```bash
+futu-mcp-server --host 127.0.0.1 --port 11111 --transport streamable-http --mcp-host 0.0.0.0 --mcp-port 8000
+```
+详见下方「内网部署与 OpenClaw 远程连接」。
 
 > **推荐**：在 MCP 客户端配置中使用 `env` 字段注入环境变量，见下方配置示例。
 
@@ -362,7 +438,8 @@ result = await session.call_tool("get_margin_ratio", {"symbol": "HK.00700"})
 
 ### 交易功能（可通过配置开关控制）
 
-- `FUTU_ENABLE_TRADING=0|1`：控制下单/改单/撤单及订单成交查询功能
+- `FUTU_ENABLE_TRADING=0|1`：控制主动交易（下单/改单/撤单等）
+- `FUTU_ENABLE_TRADE_READ=0|1`：控制只读交易查询（`get_order_list`、`get_deal_list`、`get_history_order_list`、`get_history_deal_list`）；设为 `1` 时可在未开启 `FUTU_ENABLE_TRADING` 的情况下单独开放上述查询
 - `FUTU_ENABLE_POSITIONS=0|1`：控制持仓查询功能（`get_positions` / `get_position_list`）
 
 新增交易相关 MCP 工具：

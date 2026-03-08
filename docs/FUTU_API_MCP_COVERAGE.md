@@ -16,7 +16,8 @@
 
 | 配置项 | 默认值 | 作用范围 |
 |---|---:|---|
-| `FUTU_ENABLE_TRADING` | `0` | 控制主动交易工具（下单/改单/撤单、订单/成交/费用/现金流水等） |
+| `FUTU_ENABLE_TRADING` | `0` | 控制主动交易工具（下单/改单/撤单、费用/现金流水等） |
+| `FUTU_ENABLE_TRADE_READ` | `0` | 控制只读交易工具：`get_order_list`、`get_deal_list`、`get_history_order_list`、`get_history_deal_list`；可与 `FUTU_ENABLE_TRADING` 独立使用 |
 | `FUTU_ENABLE_POSITIONS` | `1` | 控制持仓工具（`get_positions` / `get_position_list`） |
 
 ## Trade Overview 覆盖映射
@@ -26,13 +27,13 @@
 | `place_order` | `place_order` | 已实现 | 受 `FUTU_ENABLE_TRADING` 控制 |
 | `modify_order` | `modify_order` | 已实现 | 受 `FUTU_ENABLE_TRADING` 控制 |
 | `cancel_order` | `cancel_order` | 已实现 | 受 `FUTU_ENABLE_TRADING` 控制 |
-| `get_order_list` | `get_order_list` | 已实现 | 受 `FUTU_ENABLE_TRADING` 控制 |
+| `get_order_list` | `get_order_list` | 已实现 | 受 `FUTU_ENABLE_TRADING` 或 `FUTU_ENABLE_TRADE_READ` 控制 |
 | `get_position_list` | `get_position_list` | 已实现 | 受 `FUTU_ENABLE_POSITIONS` 控制 |
 | `get_asset_list` | `get_asset_list` | 兼容映射 | 复用 `accinfo_query`（与 `get_funds` 一致） |
 | `get_acc_list` | `get_acc_list` | 已实现 | `get_account_list` 官方命名别名 |
 | `get_fund_list` | `get_fund_list` | 已实现 | `get_funds` 官方命名别名 |
-| `get_history_order_list` | `get_history_order_list` | 已实现 | 受 `FUTU_ENABLE_TRADING` 控制 |
-| `get_history_deal_list` | `get_history_deal_list` | 已实现 | 受 `FUTU_ENABLE_TRADING` 控制 |
+| `get_history_order_list` | `get_history_order_list` | 已实现 | 受 `FUTU_ENABLE_TRADING` 或 `FUTU_ENABLE_TRADE_READ` 控制 |
+| `get_history_deal_list` | `get_history_deal_list` | 已实现 | 受 `FUTU_ENABLE_TRADING` 或 `FUTU_ENABLE_TRADE_READ` 控制 |
 | `get_history_position_list` | `get_history_position_list` | 已暴露（受限） | 当前 `futu-api` 无对应 SDK 方法，返回明确错误 |
 | `get_history_asset_list` | `get_history_asset_list` | 已暴露（受限） | 当前 `futu-api` 无对应 SDK 方法，返回明确错误 |
 | `get_history_fund_list` | `get_history_fund_list` | 已暴露（受限） | 当前 `futu-api` 无对应 SDK 方法，返回明确错误 |

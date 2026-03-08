@@ -413,4 +413,6 @@ python3 executor.py --call '{"tool": "get_position_list", "arguments": {"trd_env
 
 ---
 
+**另见**：若 MCP 服务器与 OpenD 部署在内网另一台机器，OpenClaw 通过 URL 连接（Streamable HTTP），请使用同目录下的 **SKILL-OPENCLAW-INTRANET.md**，无需本机安装或执行 executor。
+
 *本 Skill 通过 MCP 协议访问富途 OpenAPI，数据来自 https://github.com/shuizhengqi1/futu-stock-mcp-server*
